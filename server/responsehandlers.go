@@ -52,7 +52,6 @@ const (
 )
 
 type RequestCreateMeetingJSON struct {
-	UserId         string `json:"user_id"`
 	ChannelId      string `json:"channel_id"`
 	Topic          string `json:"title"`
 	Desc           string `json:"description"`
@@ -214,19 +213,50 @@ func (p *Plugin) Loopthroughrecordings() {
 // Create meeting doesn't call the BBB api to start a meeting
 // Only populates the meeting with details. Meeting is started when first person joins.
 func (p *Plugin) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
-	// reads in information to create a meeting from client inside
-	// whats being read in is the stuff in RequestCreateMeetingJSON
-	body, _ := io.ReadAll(r.Body)
+	userID := r.Header.Get(userIDHeaderName)
+	if userID == "" {
+		http.Error(w, "Authentication required.", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "Method not allowed.", http.StatusMethodNotAllowed)
+		return
+	}
+
 	defer r.Body.Close()
+	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
 	var request RequestCreateMeetingJSON
-	_ = json.Unmarshal(body, &request)
+	if readErr != nil || json.Unmarshal(body, &request) != nil || !model.IsValidId(request.ChannelId) {
+		http.Error(w, "Invalid meeting creation request.", http.StatusBadRequest)
+		return
+	}
+
+	// Plugin API calls do not enforce the caller's channel permissions.
+	if !p.canCreateMeeting(userID, request.ChannelId) {
+		p.API.LogWarn("Meeting creation denied", "userID", userID, "channelID", request.ChannelId)
+		http.Error(w, "You cannot create meetings in this channel.", http.StatusForbidden)
+		return
+	}
+	allowed, retryAfter, limitErr := p.allowMeetingCreation(userID, time.Now())
+	if limitErr != nil {
+		p.API.LogError("Unable to check meeting creation rate limit", "userID", userID, "error", limitErr.Error())
+		http.Error(w, "Unable to create meeting.", http.StatusServiceUnavailable)
+		return
+	}
+	if !allowed {
+		p.API.LogWarn("Meeting creation rate limit exceeded", "userID", userID)
+		w.Header().Set("Retry-After", fmt.Sprint(retryAfter))
+		http.Error(w, "Too many meeting creation requests.", http.StatusTooManyRequests)
+		return
+	}
 
 	meetingpointer := new(dataStructs.MeetingRoom)
 	var err error
 	if request.Topic == "" {
-		err = p.PopulateMeeting(meetingpointer, nil, request.Desc, request.UserId, request.ChannelId, request.AllowRecording)
+		err = p.PopulateMeeting(meetingpointer, nil, request.Desc, userID, request.ChannelId, request.AllowRecording)
 	} else {
-		err = p.PopulateMeeting(meetingpointer, []string{"create", request.Topic}, request.Desc, request.UserId, request.ChannelId, request.AllowRecording)
+		err = p.PopulateMeeting(meetingpointer, []string{"create", request.Topic}, request.Desc, userID, request.ChannelId, request.AllowRecording)
 	}
 
 	if err != nil {
@@ -235,7 +265,10 @@ func (p *Plugin) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// creates the start meeting post
-	_ = p.createStartMeetingPost(request.UserId, request.ChannelId, meetingpointer)
+	if postErr := p.createStartMeetingPost(userID, request.ChannelId, meetingpointer); postErr != nil {
+		http.Error(w, "Unable to create meeting post.", http.StatusInternalServerError)
+		return
+	}
 
 	// add our newly created meeting to our array of meetings
 	if saveMeetingErr := p.SaveMeeting(meetingpointer); saveMeetingErr != nil {
@@ -243,12 +276,24 @@ func (p *Plugin) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	toUserID, show, err := p.shouldShowCallPopup(request.UserId, request.ChannelId)
+	toUserID, show, err := p.shouldShowCallPopup(userID, request.ChannelId)
 	if err == nil && show {
-		p.sendCallAlert(meetingpointer.MeetingID_, request.UserId, toUserID)
+		p.sendCallAlert(meetingpointer.MeetingID_, userID, toUserID)
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (p *Plugin) canCreateMeeting(userID, channelID string) bool {
+	member, appErr := p.API.GetChannelMember(channelID, userID)
+	if appErr != nil || member == nil {
+		return false
+	}
+	channel, appErr := p.API.GetChannel(channelID)
+	if appErr != nil || channel == nil || channel.DeleteAt != 0 {
+		return false
+	}
+	return p.API.HasPermissionToChannel(userID, channelID, model.PermissionCreatePost)
 }
 
 func (p *Plugin) handleJoinInvite(w http.ResponseWriter, r *http.Request) {

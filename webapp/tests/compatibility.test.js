@@ -62,9 +62,9 @@ test('meeting API posts JSON with the current client headers and propagates erro
 	const {default: request} = await import('superagent');
 	const chain = {send: vi.fn().mockReturnThis(), set: vi.fn().mockReturnThis(), type: vi.fn().mockReturnThis(), accept: vi.fn().mockResolvedValue({body: {meetingId: 'meeting'}})};
 	const post = vi.spyOn(request, 'post').mockReturnValue(chain);
-	await expect(client.startMeeting('alice', 'channel', 'Topic', 'Description', true)).resolves.toEqual({meetingId: 'meeting'});
+	await expect(client.startMeeting('channel', 'Topic', 'Description', true)).resolves.toEqual({meetingId: 'meeting'});
 	expect(post).toHaveBeenCalledWith('https://chat.example/plugins/bigbluebutton/create');
-	expect(chain.send).toHaveBeenCalledWith({user_id: 'alice', channel_id: 'channel', title: 'Topic', description: 'Description', allow_recording: true});
+	expect(chain.send).toHaveBeenCalledWith({channel_id: 'channel', title: 'Topic', description: 'Description', allow_recording: true});
 	expect(chain.set).toHaveBeenCalledWith({'X-Requested-With': 'XMLHttpRequest'});
 	const error = new Error('offline');
 	chain.accept.mockRejectedValueOnce(error);

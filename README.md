@@ -46,6 +46,13 @@ Want to see how the BigBlueButton integration with Mattermost works?  Checkout t
 
 You can create a meeting that all channel participants can join.
 
+Meeting creation requires channel membership and permission to post in an active channel.
+The creator is taken from the authenticated Mattermost session; legacy `user_id`
+fields in creation requests are ignored. The HTTP creation endpoint allows ten
+requests per user per fixed minute across all channels and plugin instances. Excess
+requests receive HTTP 429 with a `Retry-After` header. Denied and rate-limited
+creation attempts are recorded in the Mattermost server logs with the caller's user ID.
+
 ![](docs_images/createchannelheader.png)
 
 Clicking the **Join Meeting** button immediately loads the BigBlueButton HTML5 client.
@@ -92,6 +99,21 @@ The upgraded plugin targets Mattermost 11.9 or later. Its webapp uses Mattermost
 Use Go 1.27.4 (selected automatically by `go.mod`), Node 26.13.1 (`nvm install && nvm use`) and npm 12.2.3 (`npm install -g npm@12.2.3`). Install golangci-lint 2.15.0 with `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`.
 
 Run `make install-dependencies`, `make check-style` and `make test` before building. `make dist` creates archives for macOS and Linux on amd64/arm64 and Windows on amd64 under `dist/`. The build uses `go build` directly and no longer needs GOPATH mode, vendoring or gox.
+
+To probe conference creation on a local test instance, set `MM_TOKEN` to the
+calling user's personal access token or session token, then run:
+
+```sh
+python3 scripts/probe_meeting_creation.py --channel-id TARGET_CHANNEL_ID --user-id OTHER_USER_ID
+```
+
+The default Mattermost URL is `http://localhost:8065`; override it with `--url`.
+Use `--unauthenticated` to test without a token. Optionally set `MM_VERIFY_TOKEN`
+to a target channel member's token to inspect posts in a private target. Each run
+sends one creation request and may create an invitation. A fixed server rejects
+inaccessible channels with HTTP 403 and attributes accepted requests to the
+authenticated caller. On the vulnerable server, an unauthenticated request may
+return HTTP 401 while still creating a post, so inspect the target channel too.
 
 Automated regression tests cover SDK activation/deactivation, meeting callbacks and attachment serialization, Redux containers and websocket handlers, API request payloads, and meeting controls rendered with React. Host UI widgets and the HTTP transport are stubbed in the webapp tests. Before release, install the bundle on a running Mattermost instance and verify `/bbb`, channel and direct calls, join/end actions, recording search/publish/delete, external guest links, and settings changes against a real BigBlueButton server.
 

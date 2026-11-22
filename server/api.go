@@ -52,6 +52,7 @@ func middlewareRequireAuth(handler HttpHandler) HttpHandler {
 		userID := r.Header.Get(userIDHeaderName)
 		if userID == "" {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
 		}
 
 		handler(w, r)
